@@ -11,6 +11,7 @@ mod formatting;
 pub mod output;
 mod package_metadata;
 mod registry;
+mod resolver;
 pub mod session;
 mod template;
 
