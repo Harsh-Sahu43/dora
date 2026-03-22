@@ -17,7 +17,14 @@ pub async fn run_build_command(
 ) -> eyre::Result<()> {
     std::fs::create_dir_all(working_dir).context("failed to create working directory")?;
 
-    let lines = build.lines().collect::<Vec<_>>();
+    let lines = build
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        return Err(eyre!("build command is empty"));
+    }
     for build_line in lines {
         let mut split = splitty::split_unquoted_whitespace(build_line).unwrap_quotes(true);
 
@@ -92,7 +99,10 @@ async fn forward_build_output<R1, R2>(
 
 #[cfg(test)]
 mod tests {
-    use super::forward_build_output;
+    use super::{forward_build_output, run_build_command};
+    use dora_message::descriptor::EnvValue;
+    use std::collections::BTreeMap;
+    use tempfile::tempdir;
     use tokio::io::{AsyncWriteExt, BufReader};
 
     #[tokio::test]
@@ -167,5 +177,49 @@ mod tests {
         assert_eq!(lines.len(), 256);
         assert_eq!(lines.first().map(String::as_str), Some("line-0"));
         assert_eq!(lines.last().map(String::as_str), Some("line-255"));
+    }
+
+    #[tokio::test]
+    async fn ignores_blank_lines_in_multi_line_build_commands() {
+        let working_dir = tempdir().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        run_build_command(
+            "cargo --version\n\ncargo --version\n",
+            working_dir.path(),
+            false,
+            &None::<BTreeMap<String, EnvValue>>,
+            tx,
+        )
+        .await
+        .unwrap();
+
+        let mut lines = Vec::new();
+        while let Some(line) = rx.recv().await {
+            lines.push(line.unwrap());
+        }
+
+        assert!(
+            lines.iter().any(|line| line.contains("cargo")),
+            "expected cargo output to be forwarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_truly_empty_build_commands() {
+        let working_dir = tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+
+        let err = run_build_command(
+            "\n   \n",
+            working_dir.path(),
+            false,
+            &None::<BTreeMap<String, EnvValue>>,
+            tx,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("build command is empty"));
     }
 }
